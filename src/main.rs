@@ -1,84 +1,80 @@
 /*!
 provides a Vec-like data structure for dynamically sized types
 */
-#![feature(alloc, raw, unsize, conservative_impl_trait)]
-#![allow(unused)]
+#![feature(alloc, raw, unsize)]
 extern crate alloc;
-use alloc::raw_vec::RawVec;
-use std::{ptr, mem};
-use std::marker::Unsize;
-use std::raw::TraitObject;
+pub use alloc::raw_vec::RawVec;
+pub use std::marker::Unsize;
+pub use std::raw::TraitObject;
 
+#[macro_export]
 macro_rules! declare_dstvec {
     ($name:ident, $Trait:ty) => {
+        use ::std::{ptr, mem};
+        use $crate::Unsize;
+        use $crate::RawVec;
+        use $crate::TraitObject;
+        use ::std::vec;
+
         pub struct $name {
-            pointers: Vec<*mut $Trait>,
+            pointers: Vec<(usize, *mut ())>,
             data: RawVec<u8>,
-            back: *mut u8,
+            used_bytes: usize,
         }
 
-        impl_dstvec!($name, $Trait);
-    };
-}
-
-macro_rules! impl_dstvec {
-    ($name:ident, $Trait:ty) => {
         impl $name {
             pub fn new() -> $name {
                 let data = RawVec::new();
-                let data_ptr = data.ptr();
                 $name {
                     pointers: Vec::new(),
                     data: data,
-                    back: data_ptr,
+                    used_bytes: 0,
                 }
             }
 
-            pub unsafe fn push<U: Unsize<$Trait> + ?Sized>(&mut self, value: *const U) {
-                let value = value as *const $Trait;
-                let used = self.used_data();
-                let extra = mem::size_of_val(&*value);
-                let old_location = self.data.ptr();
+            pub fn push<U: Unsize<$Trait>>(&mut self, value: U) {
+                let align = mem::align_of::<U>();
+                let gap = self.used_bytes + align - (self.used_bytes % align);
+                let size = mem::size_of::<U>();
 
-                self.data.reserve(used, extra);
+                self.data.reserve(self.used_bytes, gap + size);
                 self.pointers.reserve(1);
 
-                if self.data.ptr() != old_location {
-                    let mut location = self.data.ptr();
-
-                    for i in 0..self.pointers.len() {
-                        let size = mem::size_of_val(&*self.pointers[i] as &$Trait);
-                        self.pointers[i] = $name::repoint(self.pointers[i], location);
-                        location = location.offset(size as isize);
-                    }
-
-                    self.back = location;
+                unsafe {
+                    let back = self.data.ptr().offset((gap + size) as isize);
+                    ptr::copy_nonoverlapping(&value, back as *mut U, 1);
                 }
 
-                ptr::copy(value as *const u8, self.back, 1);
-                self.pointers.push($name::repoint(value as *mut $Trait, self.back));
-                self.back = self.back.offset(extra as isize);
+                let offset = self.used_bytes + gap;
+                let vtable = unsafe {
+                    let fat_pointer = &value as &$Trait;
+                    let trait_object: TraitObject = mem::transmute(fat_pointer);
+                    trait_object.vtable
+                };
+                self.pointers.push((offset, vtable));
+
+                self.used_bytes += gap + size;
+
+                mem::forget(value);
             }
+        }
 
-            fn used_data(&self) -> usize {
-                self.pointers.iter()
-                .map(|ptr| unsafe {
-                    mem::size_of_val(&*ptr)
-                }).sum()
+        impl Drop for $name {
+            fn drop(&mut self) {
+                for &(offset, vtable) in self.pointers.iter() {
+                    unsafe {
+                        let pointer = construct_fat_pointer(self.data.ptr(), offset, vtable);
+                        ptr::drop_in_place(pointer);
+                    }
+                }
             }
+        }
 
-            unsafe fn repoint(ptr: *mut $Trait, new_location: *mut u8) -> *mut $Trait {
-                use std::raw::TraitObject;
+        impl IntoIterator for $name {
+            type Item = *mut $Trait;
+            type IntoIter = IntoIter;
 
-                let raw_object: TraitObject = mem::transmute(ptr);
-
-                mem::transmute(TraitObject {
-                    data: new_location as *mut (),
-                    vtable: raw_object.vtable,
-                })
-            }
-
-            fn into_raw_iter(mut self) -> impl ExactSizeIterator<Item=*mut $Trait> {
+            fn into_iter(mut self) -> IntoIter {
                 let pointers = mem::replace(&mut self.pointers, Vec::new());
                 let data = mem::replace(&mut self.data, RawVec::new());
                 IntoIter {
@@ -88,18 +84,8 @@ macro_rules! impl_dstvec {
             }
         }
 
-        impl Drop for $name {
-            fn drop(&mut self) {
-                for &pointer in self.pointers.iter() {
-                    unsafe {
-                        ptr::drop_in_place(pointer)
-                    }
-                }
-            }
-        }
-
         pub struct IntoIter {
-            pointers: std::vec::IntoIter<*mut $Trait>,
+            pointers: vec::IntoIter<(usize, *mut ())>,
             data: RawVec<u8>,
         }
 
@@ -107,7 +93,11 @@ macro_rules! impl_dstvec {
             type Item = *mut $Trait;
 
             fn next(&mut self) -> Option<*mut $Trait> {
-                self.pointers.next()
+                self.pointers.next().map(|(offset, vtable)| {
+                    unsafe {
+                        construct_fat_pointer(self.data.ptr(), offset, vtable)
+                    }
+                })
             }
 
             fn size_hint(&self) -> (usize, Option<usize>) {
@@ -119,51 +109,69 @@ macro_rules! impl_dstvec {
 
         impl Drop for IntoIter {
             fn drop(&mut self) {
-                for pointer in mem::replace(&mut self.pointers, Vec::new().into_iter()) {
+                let offsets_with_vtables = mem::replace(&mut self.pointers, Vec::new().into_iter());
+                for (offset, vtable) in offsets_with_vtables {
                     unsafe {
-                        ptr::drop_in_place(pointer)
+                        let pointer = construct_fat_pointer(self.data.ptr(), offset, vtable);
+                        ptr::drop_in_place(pointer);
                     }
                 }
             }
         }
+
+        unsafe fn construct_fat_pointer(base: *mut u8, offset: usize, vtable: *mut ()) -> *mut $Trait {
+            mem::transmute(TraitObject {
+                data: base.offset(offset as isize) as *mut (),
+                vtable: vtable,
+            })
+        }
     };
 }
 
+#[cfg(test)]
+mod tests {
+    use std::ptr;
 
-macro_rules! push_dstvec {
-    ($dstv:expr, $value:expr) => {
-        unsafe {
-            $dstv.push(&$value);
-            ::std::mem::forget($value);
+    pub trait FnOnceUnsafe {
+        unsafe fn call_once_unsafe(&mut self);
+    }
+
+    impl<F: FnOnce()> FnOnceUnsafe for F {
+        unsafe fn call_once_unsafe(&mut self) {
+            ptr::read(self)()
         }
     }
-}
 
-pub trait FnOnceUnsafe {
-    unsafe fn call_once_unsafe(&mut self);
-}
-
-impl<F: FnOnce()> FnOnceUnsafe for F {
-    unsafe fn call_once_unsafe(&mut self) {
-        ptr::read(self)()
+    mod callbacks {
+        use super::FnOnceUnsafe;
+        declare_dstvec!(Callbacks, FnOnceUnsafe);
     }
-}
 
-declare_dstvec!(Callbacks, FnOnceUnsafe);
+    use self::callbacks::Callbacks;
 
-fn main() {
-    let mut callbacks = Callbacks::new();
-    push_dstvec!(callbacks, ||{
-        println!("YOLO!");
-    });
+    #[test]
+    fn test_closures() {
 
-    push_dstvec!(callbacks, ||{
-        println!("What's up?");
-    });
+        let mut foo = 5;
+        let mut bar = 10;
 
-    for callback in callbacks.into_raw_iter() {
-        unsafe {
-            (&mut *callback).call_once_unsafe();
+
+        let mut callbacks = Callbacks::new();
+        callbacks.push(|| {
+            foo = 20;
+        });
+
+        callbacks.push(|| {
+            bar = 30;
+        });
+
+        for callback in callbacks {
+            unsafe {
+                (*callback).call_once_unsafe();
+            }
         }
+
+        assert_eq!(foo, 20);
+        assert_eq!(bar, 30);
     }
 }
