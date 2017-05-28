@@ -12,6 +12,11 @@ dst_vec = { git = "https://github.com/mikeyhew/dst_vec" }
 To use it with trait objects, derive the `Referent` trait with `derive_referent!` from the `referent` crate:
 
 ```
+# in Cargo.toml
+referent = { git = "https://github.com/mikeyhew/referent_trait" }
+```
+
+```
 #[macro_use] extern crate referent;
 
 // you need your own trait in order to implement `Referent` on it
