@@ -3,6 +3,7 @@ use alloc::raw_vec::RawVec;
 use std::{ptr, mem};
 use super::Referent;
 
+/// An owning iterator over the contents of a DSTVec<T>. Each call to `next` will return a *mut pointer to T, and it is up to the caller to ensure that its value is dropped.
 pub struct IntoIter<T: Referent + ?Sized> {
     pointers: ::std::vec::IntoIter<(usize, T::Meta)>,
     data: RawVec<u8>,
