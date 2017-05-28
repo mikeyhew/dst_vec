@@ -45,14 +45,12 @@ impl<T: Referent + ?Sized> DSTVec<T> {
 
         unsafe {
             let back = self.data.ptr().offset(offset as isize);
-            ptr::copy_nonoverlapping(&value, back as *mut U, 1);
+            ptr::write(back as *mut U, value);
         }
 
         self.pointers.push((offset, meta));
 
         self.used_bytes += gap + size;
-
-        mem::forget(value);
     }
 
     pub fn iter<'b, 'a: 'b>(&'a self) -> impl Iterator<Item=&'a T> + 'b {
