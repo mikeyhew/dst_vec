@@ -1,23 +1,22 @@
 /*!
 provides a Vec-like data structure for dynamically sized types
 */
-#![feature(alloc, unsize)]
+#![feature(alloc, unsize, conservative_impl_trait)]
+use std::marker::Unsize;
+use std::{ptr, mem};
+
 extern crate alloc;
+use alloc::raw_vec::RawVec;
+
+extern crate referent;
+use referent::Referent;
 
 mod iter;
 pub use iter::IntoIter;
 
-mod traits;
-pub use traits::Referent;
-
-use alloc::raw_vec::RawVec;
-use std::marker::Unsize;
-use std::{ptr, mem};
-use std::vec;
-
 pub struct DSTVec<T: Referent + ?Sized> {
-    // these aren't actual pointers, they're offets + meta, used to construct a
-    // pointer on the fly
+    // these aren't actual pointers, they're offsets + meta, used to
+    // construct a pointer on the fly
     pointers: Vec<(usize, T::Meta)>,
     data: RawVec<u8>,
     used_bytes: usize,
@@ -56,8 +55,16 @@ impl<T: Referent + ?Sized> DSTVec<T> {
         mem::forget(value);
     }
 
-    unsafe fn assemble(&self, offset: usize, meta: T::Meta) -> *mut T {
-        T::assemble_mut(self.data.ptr().offset(offset as isize) as *mut T::Data, meta)
+    pub fn iter<'b, 'a: 'b>(&'a self) -> impl Iterator<Item=&'a T> + 'b {
+        self.pointers.iter().map(move |&(offset, meta)| unsafe {
+            &*self.assemble(offset, meta)
+        })
+    }
+
+    fn assemble(&self, offset: usize, meta: T::Meta) -> *mut T {
+        unsafe {
+            T::assemble_mut(self.data.ptr().offset(offset as isize) as *mut T::Data, meta)
+        }
     }
 }
 

@@ -4,3 +4,4 @@ version = "0.1.0"
 authors = ["Michael Hewson <michael@michaelhewson.ca>"]
 
 [dependencies]
+referent = {git = "https://github.com/mikeyhew/referent_trait.git"}
