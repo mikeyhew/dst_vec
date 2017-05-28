@@ -30,8 +30,8 @@ fn test_closures() {
 
     let mut callbacks = Callbacks::new();
 
-    /// We need to use raw pointers because the borrow checker thinks these
-    /// closures will outlive the current function.
+    /// We need to use raw pointers because the borrow checker thinks
+    /// these closures will outlive the current function.
     callbacks.push(move || {
         unsafe {
             *p_foo = 20;
