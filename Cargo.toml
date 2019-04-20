@@ -2,6 +2,8 @@
 name = "dst_vec"
 version = "0.1.0"
 authors = ["Michael Hewson <michael@michaelhewson.ca>"]
+edition = "2018"
 
 [dependencies]
-referent = {git = "https://github.com/mikeyhew/referent_trait.git"}
+# referent = {git = "https://github.com/mikeyhew/referent_trait.git"}
+referent = {path = "../referent_trait"}
